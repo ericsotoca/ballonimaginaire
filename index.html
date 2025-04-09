@@ -1,1 +1,1164 @@
-ballon imaginaire
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Le Voyage du Ballon d'Énergie</title>
+    <style>
+        /* --- CSS Embarqué --- */
+
+        /* Reset simple */
+        *, *::before, *::after {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        html, body {
+            height: 100%;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+            line-height: 1.6;
+            background-color: #f0f4f8; /* Couleur de fond douce */
+            color: #333;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+        }
+
+        body {
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 600px;
+            width: 100%;
+            padding: 30px;
+            background-color: #ffffff;
+            border-radius: 12px;
+            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.1);
+        }
+
+        h1 {
+            font-size: 2.2em;
+            margin-bottom: 25px;
+            color: #2c3e50; /* Bleu foncé */
+        }
+
+        #status-message {
+            font-size: 1.2em;
+            min-height: 80px; /* Espace pour les messages */
+            padding: 15px;
+            margin-bottom: 30px;
+            border-radius: 8px;
+            background-color: #e7eff6; /* Bleu très clair */
+            color: #34495e; /* Bleu gris */
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            transition: background-color 0.3s ease;
+        }
+
+        #status-message.active {
+            background-color: #d1e7dd; /* Vert clair si actif */
+            color: #0f5132;
+        }
+
+        #status-message.error {
+            background-color: #f8d7da; /* Rouge clair si erreur */
+            color: #842029;
+        }
+
+        .controls button {
+            font-size: 1.1em;
+            padding: 15px 30px;
+            margin: 10px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background-color 0.3s ease, transform 0.1s ease;
+            color: white;
+        }
+
+        #start-button {
+            background-color: #28a745; /* Vert */
+        }
+
+        #start-button:hover {
+            background-color: #218838;
+        }
+
+        #start-button:active {
+            transform: scale(0.98);
+        }
+
+        #stop-button {
+            background-color: #dc3545; /* Rouge */
+        }
+
+        #stop-button:hover {
+            background-color: #c82333;
+        }
+
+        #stop-button:active {
+            transform: scale(0.98);
+        }
+
+        #stop-button:disabled {
+            background-color: #adb5bd; /* Gris si désactivé */
+            cursor: not-allowed;
+        }
+
+        .debug-info {
+            margin-top: 30px;
+            padding: 15px;
+            background-color: #f8f9fa; /* Gris très clair */
+            border: 1px solid #dee2e6; /* Bordure grise */
+            border-radius: 8px;
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 0.9em;
+            text-align: left;
+            max-height: 200px;
+            overflow-y: auto;
+            display: none; /* Caché par défaut, peut être activé pour le debug */
+        }
+
+        .debug-info p {
+            margin-bottom: 5px;
+            word-break: break-all;
+        }
+
+        /* Styles spécifiques pour l'état de l'application */
+        body.session-active .container {
+           /* Peut-être changer le fond ou ajouter une bordure */
+           /* box-shadow: 0 0 15px rgba(40, 167, 69, 0.5); */
+        }
+
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Le Voyage du Ballon d'Énergie</h1>
+
+        <p id="status-message">Prêt à commencer votre voyage ? Tenez le téléphone dans la main droite et appuyez sur Démarrer.</p>
+
+        <div class="controls">
+            <button id="start-button">Démarrer la Session</button>
+            <button id="stop-button" disabled>Arrêter la Session</button>
+        </div>
+
+        <div class="debug-info" id="debug-output">
+            <p><strong>Debug Info:</strong></p>
+            <!-- Les informations de débogage seront ajoutées ici par JavaScript -->
+        </div>
+    </div>
+
+    <script>
+        // --- JavaScript Embarqué ---
+
+        // --- Configuration Générale ---
+        const DEBUG_MODE = false; // Mettre à true pour afficher les infos de debug
+        const PREFERRED_HAND = 'right'; // Main qui tient le téléphone ('right' ou 'left')
+        const SPEECH_LANG = 'fr-FR';    // Langue pour la synthèse vocale
+        const MOVEMENT_SLOW_THRESHOLD = 1.0; // Seuil d'accélération (m/s^2 hors gravité) pour "lent"
+        const MOVEMENT_STABILITY_THRESHOLD = 0.2; // Seuil d'accélération pour "stable"
+        const ORIENTATION_TOLERANCE = 20; // Tolérance en degrés pour atteindre l'orientation cible
+        const HOLD_STABILITY_CHECK_INTERVAL = 500; // ms - Fréquence de vérification pendant la tenue
+        const SHORT_PAUSE_DURATION = 1500; // ms - Pause entre certaines étapes
+
+        // --- Variables d'État ---
+        let isSessionActive = false;
+        let currentSequence = null;
+        let currentStepIndex = -1;
+        let currentStep = null;
+        let currentStepState = 'idle'; // idle, instructing, moving, holding_check_stability, holding, validating, finished
+        let targetOrientation = null; // { beta: number, gamma: number | 'any', alpha: number | 'any', tolerance: number }
+        let targetSpeedLimit = Infinity;
+        let targetStabilityThreshold = Infinity;
+        let holdStartTime = 0;
+        let holdDuration = 0;
+        let holdTimerId = null;
+        let stabilityCheckTimerId = null;
+        let isStableDuringHold = true; // Flag pour la vérification pendant le hold
+
+        // Permissions
+        let motionPermissionGranted = false;
+        let orientationPermissionGranted = false;
+
+        // Capteurs
+        let lastOrientationData = { alpha: null, beta: null, gamma: null, timestamp: 0 };
+        let lastMotionData = { acceleration: { x: null, y: null, z: null }, rotationRate: { alpha: null, beta: null, gamma: null }, timestamp: 0 };
+        let smoothedBeta = null; // Pour lisser l'orientation si besoin
+        const SMOOTHING_FACTOR = 0.2; // Facteur pour le lissage EMA (plus petit = plus lisse)
+
+        // Audio
+        let audioContext = null;
+        let oscillator = null; // Pour les bips simples
+        const synth = window.speechSynthesis;
+        let utterance = null;
+
+        // --- Éléments du DOM ---
+        const startButton = document.getElementById('start-button');
+        const stopButton = document.getElementById('stop-button');
+        const statusMessage = document.getElementById('status-message');
+        const debugOutput = document.getElementById('debug-output');
+        const bodyElement = document.body;
+
+        // --- Patterns de Vibration ---
+        const VIBRATE_SLOW_DOWN = [200]; // Vibration courte pour "trop rapide"
+        const VIBRATE_POSITION_REACHED = [80]; // Vibration douce quand la position est atteinte
+        const VIBRATE_HOLD_SUCCESS = [80, 100, 80]; // Pattern distinct pour fin de tenue réussie
+        const VIBRATE_ERROR = [50, 50, 50]; // Pattern pour une erreur ou instabilité
+
+        // --- Séquence de Mouvements Définie ---
+        // Chaque étape a un 'type' et des paramètres spécifiques.
+        // 'target' utilise les angles en degrés: alpha (0-360), beta (-180-180), gamma (-90-90)
+        // 'any' signifie que l'angle n'est pas vérifié pour cette étape.
+        const energyBallSequence = [
+            {
+                type: 'instruction',
+                text: `Bienvenue. Préparez-vous pour Le Voyage du Ballon d'Énergie. Tenez votre téléphone fermement mais sans tension dans votre main ${PREFERRED_HAND}, verticalement, écran vers l'intérieur. Laissez vos bras pendre naturellement. Votre autre main suivra en miroir. Imaginez tenir un ballon léger entre vos paumes. Nous commençons dans un instant.`
+            },
+            { // Étape 1: Lever devant
+                type: 'move',
+                instruction: "Très lentement, levez les deux mains devant vous, comme si vous offriez le ballon à quelqu'un à hauteur d'épaule.",
+                target: { beta: 0, gamma: 'any', alpha: 'any', tolerance: ORIENTATION_TOLERANCE }, // Vise l'horizontale devant
+                speedLimit: MOVEMENT_SLOW_THRESHOLD,
+                stabilityCheck: false // On ne vérifie pas la stabilité PENDANT le mouvement, seulement la vitesse
+            },
+            { // Tenir devant
+                type: 'hold',
+                instruction: "Maintenez cette position. Respirez calmement.",
+                duration: 15000, // 15 secondes pour la démo (30s peut être long)
+                target: { beta: 0, gamma: 'any', alpha: 'any', tolerance: ORIENTATION_TOLERANCE },
+                stabilityCheck: true, // Doit rester stable
+                stabilityThreshold: MOVEMENT_STABILITY_THRESHOLD
+            },
+            { // Étape 2: Descendre
+                type: 'move',
+                instruction: "Maintenant, toujours très lentement, descendez le ballon devant vous, jusqu'à ce que vos mains reviennent le long du corps.",
+                target: { beta: 90, gamma: 'any', alpha: 'any', tolerance: ORIENTATION_TOLERANCE }, // Vise la verticale le long du corps
+                speedLimit: MOVEMENT_SLOW_THRESHOLD,
+                stabilityCheck: false
+            },
+             { // Tenir en bas brièvement
+                type: 'hold',
+                instruction: "Tenez ici un instant.",
+                duration: 3000, // 3 secondes
+                target: { beta: 90, gamma: 'any', alpha: 'any', tolerance: ORIENTATION_TOLERANCE },
+                stabilityCheck: true,
+                stabilityThreshold: MOVEMENT_STABILITY_THRESHOLD
+            },
+            { // Étape 3: Remonter et vers la droite (approximation)
+                type: 'move',
+                instruction: `Remontez lentement le ballon à hauteur d'épaule, et déplacez-le vers votre ${PREFERRED_HAND === 'right' ? 'droite' : 'gauche'}, comme pour le passer à quelqu'un à côté.`,
+                // Note: Vérifier la direction droite/gauche est très dur. On vérifie surtout la hauteur.
+                target: { beta: 0, gamma: 'any', alpha: 'any', tolerance: ORIENTATION_TOLERANCE }, // Hauteur épaule
+                speedLimit: MOVEMENT_SLOW_THRESHOLD,
+                stabilityCheck: false
+            },
+            { // Tenir à droite
+                type: 'hold',
+                instruction: "Maintenez cette position latérale.",
+                duration: 15000, // 15 secondes
+                target: { beta: 0, gamma: 'any', alpha: 'any', tolerance: ORIENTATION_TOLERANCE }, // Hauteur épaule
+                stabilityCheck: true,
+                stabilityThreshold: MOVEMENT_STABILITY_THRESHOLD
+            },
+             { // Étape 4: Passer à gauche (approximation)
+                type: 'move',
+                instruction: `Gardez la même hauteur, et déplacez maintenant le ballon très lentement et fluidement vers votre ${PREFERRED_HAND === 'right' ? 'gauche' : 'droite'}, traversant devant vous.`,
+                // On vérifie que beta RESTE proche de 0 et que le mouvement est lent.
+                target: { beta: 0, gamma: 'any', alpha: 'any', tolerance: ORIENTATION_TOLERANCE }, // Hauteur épaule
+                speedLimit: MOVEMENT_SLOW_THRESHOLD,
+                stabilityCheck: false // On vérifie la fluidité via speedLimit
+            },
+             { // Tenir à gauche
+                type: 'hold',
+                instruction: "Maintenez de ce côté.",
+                duration: 15000, // 15 secondes
+                target: { beta: 0, gamma: 'any', alpha: 'any', tolerance: ORIENTATION_TOLERANCE }, // Hauteur épaule
+                stabilityCheck: true,
+                stabilityThreshold: MOVEMENT_STABILITY_THRESHOLD
+            },
+            { // Retour au centre et descente
+                type: 'move',
+                instruction: "Parfait. Ramenez lentement le ballon au centre devant vous, puis redescendez les bras le long du corps.",
+                target: { beta: 90, gamma: 'any', alpha: 'any', tolerance: ORIENTATION_TOLERANCE }, // Position finale: verticale
+                speedLimit: MOVEMENT_SLOW_THRESHOLD * 1.5, // Un peu plus rapide pour finir
+                stabilityCheck: false
+            },
+            {
+                type: 'instruction',
+                text: "Le voyage est terminé. Prenez un instant pour ressentir le calme. Vous pouvez arrêter la session."
+            }
+        ];
+        // --- Fonctions Utilitaires ---
+
+        /**
+         * Affiche un message dans la zone de statut et éventuellement dans la console.
+         * @param {string} message Le message à afficher.
+         * @param {'info'|'active'|'error'} type Type de message pour le style CSS.
+         * @param {boolean} logToConsole Indique s'il faut aussi logger en console.
+         */
+        function updateStatus(message, type = 'info', logToConsole = false) {
+            statusMessage.textContent = message;
+            statusMessage.className = type; // Applique la classe CSS pour le style
+            if (logToConsole || DEBUG_MODE) {
+                console.log(`[Status:${type}] ${message}`);
+            }
+             // Assurer la visibilité même si l'utilisateur ne regarde pas (utile pour debug)
+            if (type === 'error') console.error(message);
+        }
+
+        /**
+         * Ajoute une ligne d'information dans la zone de débogage (si activée).
+         * @param {string} text Le texte à ajouter.
+         */
+        function debugLog(text) {
+            if (DEBUG_MODE) {
+                const p = document.createElement('p');
+                p.textContent = `[${new Date().toLocaleTimeString()}] ${text}`;
+                // Insérer au début pour voir les logs les plus récents en haut
+                debugOutput.insertBefore(p, debugOutput.children[1]);
+                 // Limiter le nombre de lignes de log pour éviter de surcharger
+                const maxLogLines = 50;
+                while (debugOutput.children.length > maxLogLines + 1) { // +1 pour le titre "Debug Info:"
+                    debugOutput.removeChild(debugOutput.lastChild);
+                }
+            }
+        }
+
+        /**
+         * Joue un pattern de vibration si l'API est disponible.
+         * @param {number | number[]} pattern Pattern de vibration (ms).
+         */
+        function vibrate(pattern) {
+            if ('vibrate' in navigator) {
+                try {
+                    navigator.vibrate(pattern);
+                    debugLog(`Vibration: ${JSON.stringify(pattern)}`);
+                } catch (error) {
+                    console.error("Erreur lors de la vibration:", error);
+                    debugLog("Erreur Vibration API");
+                }
+            } else {
+                debugLog("Vibration API non supportée");
+            }
+        }
+
+        /**
+         * Parle un texte donné via l'API SpeechSynthesis.
+         * Gère la file d'attente et l'annulation.
+         * @param {string} text Le texte à dire.
+         * @param {boolean} interrupt Si true, annule la parole en cours avant de parler.
+         * @param {Function} onEndCallback Callback exécuté quand la parole est terminée.
+         */
+        function speak(text, interrupt = false, onEndCallback = null) {
+            if (!synth) {
+                updateStatus("Erreur: Synthèse vocale non supportée.", 'error', true);
+                // Si pas de voix, on passe à la suite après un délai pour simuler la parole
+                 if(onEndCallback) setTimeout(onEndCallback, SHORT_PAUSE_DURATION);
+                return;
+            }
+
+            if (interrupt && synth.speaking) {
+                synth.cancel();
+                debugLog("Speech Synthesis: parole interrompue.");
+            }
+
+            // Nettoyer l'ancien utterance pour être sûr
+            if (utterance) {
+                utterance.onend = null;
+                utterance.onerror = null;
+            }
+
+            utterance = new SpeechSynthesisUtterance(text);
+            utterance.lang = SPEECH_LANG;
+            // Optionnel: choisir une voix spécifique si disponible
+            // const voices = synth.getVoices();
+            // utterance.voice = voices.find(voice => voice.lang === SPEECH_LANG && voice.name.includes('Google'));
+
+            utterance.onstart = () => {
+                 debugLog(`Speech Start: "${text.substring(0, 30)}..."`);
+            };
+
+            utterance.onend = () => {
+                debugLog(`Speech End: "${text.substring(0, 30)}..."`);
+                utterance = null; // Nettoyer
+                if (onEndCallback) {
+                   try {
+                       onEndCallback();
+                   } catch(error) {
+                       console.error("Erreur dans le callback onEnd de speak:", error);
+                       stopSession("Erreur interne.");
+                   }
+                }
+            };
+
+            utterance.onerror = (event) => {
+                console.error("Erreur de SpeechSynthesis:", event.error);
+                updateStatus(`Erreur de synthèse vocale: ${event.error}`, 'error', true);
+                utterance = null; // Nettoyer
+                 // Essayer de continuer même si la voix échoue? Peut-être arrêter la session?
+                 // Pour l'instant on essaie de continuer via le callback, comme si ça s'était terminé.
+                 if (onEndCallback) {
+                    setTimeout(onEndCallback, 500); // Petit délai pour compenser l'erreur
+                 }
+            };
+
+            // Mettre en file d'attente (ou parler immédiatement si rien n'est en cours)
+            synth.speak(utterance);
+        }
+
+         /**
+         * Joue un bip simple via Web Audio API.
+         * @param {number} frequency Fréquence du bip (Hz).
+         * @param {number} duration Durée du bip (ms).
+         * @param {string} type Type d'onde ('sine', 'square', 'sawtooth', 'triangle').
+         */
+        function playBeep(frequency = 440, duration = 100, type = 'sine') {
+            if (!audioContext) {
+                debugLog("AudioContext non initialisé. Impossible de jouer le bip.");
+                // Essayer d'initialiser ici si ce n'est pas fait (nécessite interaction utilisateur)
+                if (!initializeAudioContext()) {
+                    return; // Ne pas continuer si l'initialisation échoue
+                }
+            }
+             // Vérifier à nouveau après tentative d'initialisation
+             if (!audioContext) return;
+
+             // Si l'AudioContext était suspendu, le reprendre
+            if (audioContext.state === 'suspended') {
+                audioContext.resume().then(() => {
+                    debugLog("AudioContext repris.");
+                    playBeepInternal(frequency, duration, type);
+                }).catch(err => {
+                    console.error("Erreur lors de la reprise de l'AudioContext:", err);
+                });
+            } else {
+                 playBeepInternal(frequency, duration, type);
+            }
+        }
+
+        /**
+         * Fonction interne pour jouer le bip une fois l'AudioContext prêt.
+         */
+        function playBeepInternal(frequency, duration, type) {
+             try {
+                const gainNode = audioContext.createGain();
+                gainNode.connect(audioContext.destination);
+                gainNode.gain.setValueAtTime(0.1, audioContext.currentTime); // Volume faible
+
+                oscillator = audioContext.createOscillator();
+                oscillator.type = type;
+                oscillator.frequency.setValueAtTime(frequency, audioContext.currentTime); // Valeur en Hertz
+                oscillator.connect(gainNode);
+
+                oscillator.start();
+                oscillator.stop(audioContext.currentTime + duration / 1000); // Convertir ms en secondes
+                debugLog(`Beep joué: ${frequency}Hz, ${duration}ms`);
+
+                 // Nettoyage après l'arrêt (optionnel mais propre)
+                oscillator.onended = () => {
+                    oscillator.disconnect();
+                    gainNode.disconnect();
+                    oscillator = null; // Libérer la référence
+                };
+            } catch (error) {
+                console.error("Erreur Web Audio API:", error);
+                debugLog("Erreur Web Audio API");
+            }
+        }
+
+
+        /**
+         * Initialise l'AudioContext (doit être appelé après une interaction utilisateur).
+         * @returns {boolean} True si l'initialisation a réussi ou était déjà faite, false sinon.
+         */
+        function initializeAudioContext() {
+            if (audioContext) return true; // Déjà initialisé
+
+            try {
+                window.AudioContext = window.AudioContext || window.webkitAudioContext;
+                if (!window.AudioContext) {
+                     console.error("Web Audio API n'est pas supportée par ce navigateur.");
+                     updateStatus("Erreur: API Audio non supportée.", 'error');
+                     return false;
+                }
+                audioContext = new AudioContext();
+                debugLog("AudioContext initialisé.");
+                // Si l'état est suspendu (souvent le cas avant interaction), on note mais on ne reprend pas encore.
+                if (audioContext.state === 'suspended') {
+                    debugLog("AudioContext est suspendu, nécessite une interaction pour reprendre.");
+                }
+                return true;
+            } catch (error) {
+                console.error("Impossible de créer l'AudioContext:", error);
+                updateStatus("Erreur: Impossible d'initialiser l'audio.", 'error');
+                audioContext = null;
+                return false;
+            }
+        }
+
+        /**
+         * Calcule la magnitude d'un vecteur 3D.
+         * @param {number} x Composante X.
+         * @param {number} y Composante Y.
+         * @param {number} z Composante Z.
+         * @returns {number} Magnitude.
+         */
+        function calculateMagnitude(x, y, z) {
+            if (x === null || y === null || z === null) return 0;
+            return Math.sqrt(x * x + y * y + z * z);
+        }
+
+        /**
+         * Vérifie si l'orientation actuelle est dans la tolérance de la cible.
+         * @param {{alpha: number|null, beta: number|null, gamma: number|null}} currentOrientation Orientation actuelle.
+         * @param {{alpha: number|'any', beta: number|'any', gamma: number|'any', tolerance: number}} target L'objectif d'orientation.
+         * @returns {boolean} True si dans la tolérance.
+         */
+        function isOrientationWithinTolerance(currentOrientation, target) {
+            if (!currentOrientation || !target) return false;
+            if (currentOrientation.beta === null || currentOrientation.gamma === null || currentOrientation.alpha === null) return false;
+
+            let betaOk = true;
+            let gammaOk = true;
+            let alphaOk = true;
+
+            // Vérification Beta (-180 à 180)
+            if (target.beta !== 'any') {
+                const betaDiff = Math.abs(currentOrientation.beta - target.beta);
+                // Gérer le cas où la cible est proche de +/- 180
+                 // Note: la gestion du wraparound de l'angle alpha est plus complexe, on la simplifie ici.
+                betaOk = betaDiff <= target.tolerance;
+                 debugLog(`Orientation Check - Beta: current=${currentOrientation.beta?.toFixed(1)}, target=${target.beta}, diff=${betaDiff?.toFixed(1)}, ok=${betaOk}`);
+
+            }
+
+            // Vérification Gamma (-90 à 90)
+            if (target.gamma !== 'any') {
+                const gammaDiff = Math.abs(currentOrientation.gamma - target.gamma);
+                gammaOk = gammaDiff <= target.tolerance;
+                 debugLog(`Orientation Check - Gamma: current=${currentOrientation.gamma?.toFixed(1)}, target=${target.gamma}, diff=${gammaDiff?.toFixed(1)}, ok=${gammaOk}`);
+            }
+
+             // Vérification Alpha (0 à 360) - Moins fiable en général, mais peut être utile
+             if (target.alpha !== 'any') {
+                // Gérer le wraparound de 0/360
+                let alphaDiff = Math.abs(currentOrientation.alpha - target.alpha);
+                if (alphaDiff > 180) { // Si la différence est > 180, prendre le chemin le plus court
+                    alphaDiff = 360 - alphaDiff;
+                }
+                alphaOk = alphaDiff <= target.tolerance;
+                 debugLog(`Orientation Check - Alpha: current=${currentOrientation.alpha?.toFixed(1)}, target=${target.alpha}, diff=${alphaDiff?.toFixed(1)}, ok=${alphaOk}`);
+            }
+
+            return betaOk && gammaOk && alphaOk;
+        }
+
+         /**
+          * Applique un lissage exponentiel mobile (EMA).
+          * @param {number} currentValue La valeur actuelle.
+          * @param {number|null} previousSmoothedValue La valeur lissée précédente.
+          * @param {number} factor Le facteur de lissage (0 à 1).
+          * @returns {number} La nouvelle valeur lissée.
+          */
+         function smoothValue(currentValue, previousSmoothedValue, factor) {
+            if (previousSmoothedValue === null) {
+                return currentValue; // Initialisation
+            }
+            return factor * currentValue + (1 - factor) * previousSmoothedValue;
+         }
+
+        // --- Gestion des Capteurs ---
+
+        /**
+         * Demande les permissions pour les capteurs de mouvement et d'orientation.
+         * C'est plus complexe sur iOS.
+         * @returns {Promise<boolean>} True si les permissions sont probablement accordées, false sinon.
+         */
+        async function requestSensorPermissions() {
+            // --- Logique spécifique à iOS ---
+            if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+                try {
+                    updateStatus("Demande d'accès aux capteurs (iOS)...", 'info');
+                    const orientationPermission = await DeviceOrientationEvent.requestPermission();
+                    if (orientationPermission === 'granted') {
+                        orientationPermissionGranted = true;
+                        debugLog("Permission Orientation accordée (iOS)");
+                    } else {
+                        updateStatus("Accès aux capteurs d'orientation refusé.", 'error');
+                        return false; // Bloquant
+                    }
+
+                    // Demander aussi pour DeviceMotionEvent sur iOS
+                     if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
+                         const motionPermission = await DeviceMotionEvent.requestPermission();
+                         if (motionPermission === 'granted') {
+                             motionPermissionGranted = true;
+                             debugLog("Permission Mouvement accordée (iOS)");
+                         } else {
+                             // Peut-être moins critique si orientation OK? Pour l'instant, on considère bloquant.
+                              updateStatus("Accès aux capteurs de mouvement refusé.", 'error');
+                             return false;
+                         }
+                     } else {
+                         // Si pas de requestPermission pour Motion, on suppose que ça marche si Orientation a été accordée
+                         motionPermissionGranted = true;
+                     }
+                     return true;
+
+                } catch (error) {
+                    console.error("Erreur lors de la demande de permission iOS:", error);
+                    updateStatus("Erreur lors de la demande d'accès aux capteurs.", 'error');
+                    return false;
+                }
+            } else {
+                // --- Logique pour les autres navigateurs (Android/Desktop) ---
+                // On suppose que si les API existent, on a la permission ou elle sera demandée implicitement.
+                // On peut vérifier l'existence des API.
+                if (typeof DeviceOrientationEvent === 'undefined') {
+                     updateStatus("API DeviceOrientation non supportée.", 'error');
+                     return false;
+                }
+                 if (typeof DeviceMotionEvent === 'undefined') {
+                     updateStatus("API DeviceMotion non supportée.", 'error');
+                     return false;
+                 }
+                 // On suppose que les permissions sont ok pour les navigateurs non-iOS qui supportent les events
+                 orientationPermissionGranted = true;
+                 motionPermissionGranted = true;
+                 debugLog("Permissions capteurs supposées accordées (non-iOS).");
+                 return true;
+            }
+        }
+
+        /**
+         * Gestionnaire pour l'événement DeviceOrientation.
+         * @param {DeviceOrientationEvent} event Données d'orientation.
+         */
+        function handleOrientation(event) {
+            if (!isSessionActive || !event) return;
+
+            lastOrientationData = {
+                alpha: event.alpha, // Z axis rotation (compass heading) 0-360
+                beta: event.beta,   // X axis rotation (front to back) -180-180
+                gamma: event.gamma, // Y axis rotation (side to side) -90-90
+                timestamp: event.timeStamp || Date.now()
+            };
+
+            // Lissage optionnel (ex: sur beta)
+            smoothedBeta = smoothValue(lastOrientationData.beta, smoothedBeta, SMOOTHING_FACTOR);
+             // Utiliser smoothedBeta si besoin dans les vérifications
+             const currentBetaForCheck = smoothedBeta !== null ? smoothedBeta : lastOrientationData.beta;
+
+             debugLog(`Orientation: A=${lastOrientationData.alpha?.toFixed(0)} B=${lastOrientationData.beta?.toFixed(0)} (S:${currentBetaForCheck?.toFixed(0)}) G=${lastOrientationData.gamma?.toFixed(0)}`);
+
+
+            // Vérification si on est dans une étape de mouvement ou de tenue
+            if (currentStepState === 'moving' || currentStepState === 'holding_check_stability' || currentStepState === 'holding') {
+                checkStepProgress(); // Vérifier la progression basée (aussi) sur l'orientation
+            }
+        }
+
+        /**
+         * Gestionnaire pour l'événement DeviceMotion.
+         * @param {DeviceMotionEvent} event Données de mouvement.
+         */
+        function handleMotion(event) {
+             if (!isSessionActive || !event) return;
+
+             // Utiliser acceleration ou accelerationIncludingGravity selon le besoin
+             // acceleration = sans la gravité (bon pour détecter les mouvements purs)
+             // accelerationIncludingGravity = avec la gravité (bon pour détecter l'orientation statique)
+             const accel = event.acceleration || { x: null, y: null, z: null };
+             const accelGrav = event.accelerationIncludingGravity || { x: null, y: null, z: null };
+             const rotRate = event.rotationRate || { alpha: null, beta: null, gamma: null }; // Degrés par seconde
+
+             lastMotionData = {
+                acceleration: accel,
+                accelerationIncludingGravity: accelGrav,
+                rotationRate: rotRate,
+                timestamp: event.timeStamp || Date.now()
+            };
+
+            // Calculer la magnitude de l'accélération (sans gravité) pour détecter la vitesse/secousse
+            const currentAccelerationMagnitude = calculateMagnitude(accel.x, accel.y, accel.z);
+            // Calculer la magnitude de la vitesse de rotation
+            const currentRotationRateMagnitude = calculateMagnitude(rotRate.alpha, rotRate.beta, rotRate.gamma);
+
+             debugLog(`Motion: AccelMag=${currentAccelerationMagnitude.toFixed(2)} RotRateMag=${currentRotationRateMagnitude.toFixed(2)}`);
+
+
+            // Vérification pendant le mouvement ou la tenue
+            if (currentStepState === 'moving') {
+                 // Vérifier si le mouvement est trop rapide
+                if (currentAccelerationMagnitude > targetSpeedLimit) {
+                    debugLog(`Mouvement trop rapide! (${currentAccelerationMagnitude.toFixed(2)} > ${targetSpeedLimit.toFixed(2)})`);
+                    vibrate(VIBRATE_SLOW_DOWN);
+                     // Optionnel: parler "Plus lentement" - mais peut être trop verbeux/rapide
+                     // speak("Plus lentement.", true);
+                }
+                checkStepProgress(); // Vérifier si la position cible est atteinte
+            } else if (currentStepState === 'holding_check_stability' || currentStepState === 'holding') {
+                 // Vérifier si on est stable pendant la tenue
+                 if (currentStep.stabilityCheck) {
+                     const isCurrentlyStable = currentAccelerationMagnitude < currentStep.stabilityThreshold;
+                     if (!isCurrentlyStable) {
+                         isStableDuringHold = false; // Marquer comme instable si ça arrive PENDANT la phase de vérification
+                         // Donner un feedback d'instabilité ? Pour l'instant on le note juste.
+                         debugLog(`Instable pendant la tenue! Accel: ${currentAccelerationMagnitude.toFixed(2)} > Threshold: ${currentStep.stabilityThreshold.toFixed(2)}`);
+                         // Optionnel: petite vibration d'alerte
+                         // vibrate(VIBRATE_ERROR);
+                     } else {
+                          // Si on redevient stable, on ne remet pas isStableDuringHold à true
+                          // car une seule instabilité pendant le hold peut être considérée comme échec.
+                          // La logique de validation finale décidera.
+                           debugLog(`Stable pendant la tenue (Accel: ${currentAccelerationMagnitude.toFixed(2)})`);
+                     }
+                 }
+                 // Pas besoin d'appeler checkStepProgress ici, la validation se fait par timer
+            }
+        }
+
+        /**
+         * Démarre les écouteurs de capteurs.
+         */
+        function startSensorListeners() {
+            if (!orientationPermissionGranted || !motionPermissionGranted) {
+                 console.error("Permissions capteurs non accordées, impossible de démarrer les listeners.");
+                 stopSession("Permissions capteurs manquantes.");
+                 return;
+            }
+            debugLog("Démarrage des écouteurs de capteurs...");
+             // Reset des variables de lissage
+             smoothedBeta = lastOrientationData.beta; // Initialiser avec la dernière valeur connue
+
+             try {
+                window.addEventListener('deviceorientation', handleOrientation, true);
+                window.addEventListener('devicemotion', handleMotion, true);
+                 debugLog("Écouteurs de capteurs activés.");
+            } catch (error) {
+                 console.error("Erreur lors de l'ajout des écouteurs:", error);
+                 stopSession("Erreur d'initialisation des capteurs.");
+            }
+        }
+
+        /**
+         * Arrête les écouteurs de capteurs.
+         */
+        function stopSensorListeners() {
+            debugLog("Arrêt des écouteurs de capteurs...");
+             try {
+                window.removeEventListener('deviceorientation', handleOrientation, true);
+                window.removeEventListener('devicemotion', handleMotion, true);
+                debugLog("Écouteurs de capteurs désactivés.");
+            } catch (error) {
+                 console.error("Erreur lors de la suppression des écouteurs:", error);
+                 // Continuer l'arrêt de session même si erreur ici
+            }
+             // Réinitialiser les dernières données
+             lastOrientationData = { alpha: null, beta: null, gamma: null, timestamp: 0 };
+             lastMotionData = { acceleration: { x: null, y: null, z: null }, rotationRate: { alpha: null, beta: null, gamma: null }, timestamp: 0 };
+             smoothedBeta = null;
+        }
+
+        // --- Logique de la Séquence ---
+
+        /**
+         * Commence ou reprend la session de coaching.
+         * @param {object[]} sequence La séquence de mouvements à suivre.
+         */
+        async function startSession(sequence) {
+            if (isSessionActive) {
+                updateStatus("Une session est déjà en cours.", 'info');
+                return;
+            }
+
+            updateStatus("Initialisation de la session...", 'info');
+            bodyElement.classList.add('session-active');
+
+            // 1. Initialiser l'AudioContext (important de le faire suite à un clic)
+            if (!initializeAudioContext()) {
+                 // Message d'erreur déjà affiché par la fonction
+                 bodyElement.classList.remove('session-active');
+                 return; // Ne pas démarrer si l'audio échoue
+            }
+
+            // 2. Demander les permissions capteurs
+             if (!motionPermissionGranted || !orientationPermissionGranted) {
+                 const permissionsOk = await requestSensorPermissions();
+                 if (!permissionsOk) {
+                      // Message d'erreur déjà affiché par requestSensorPermissions
+                      bodyElement.classList.remove('session-active');
+                      return; // Arrêter si permissions refusées
+                 }
+             }
+
+
+            // 3. Réinitialiser l'état
+            currentSequence = sequence;
+            currentStepIndex = -1;
+            currentStep = null;
+            currentStepState = 'idle';
+            targetOrientation = null;
+            targetSpeedLimit = Infinity;
+            targetStabilityThreshold = Infinity;
+            holdStartTime = 0;
+            holdDuration = 0;
+            clearTimeout(holdTimerId); holdTimerId = null;
+            clearTimeout(stabilityCheckTimerId); stabilityCheckTimerId = null;
+            isStableDuringHold = true; // Réinitialiser pour chaque hold
+
+             // Mettre à jour l'UI
+             startButton.disabled = true;
+             stopButton.disabled = false;
+             if (DEBUG_MODE) {
+                 debugOutput.style.display = 'block';
+                 // Effacer les anciens logs
+                 while(debugOutput.children.length > 1) {
+                     debugOutput.removeChild(debugOutput.lastChild);
+                 }
+             }
+
+
+            // 4. Marquer comme actif et démarrer la première étape
+            isSessionActive = true;
+            updateStatus("Session démarrée. Suivez les instructions.", 'active');
+            debugLog("===== Session Démarrée =====");
+            // Lancer la première étape après une courte pause
+            setTimeout(nextStep, 500);
+        }
+
+        /**
+         * Arrête la session en cours.
+         * @param {string} [reason="Session arrêtée par l'utilisateur."] Raison de l'arrêt.
+         */
+        function stopSession(reason = "Session arrêtée par l'utilisateur.") {
+            if (!isSessionActive) return; // Déjà arrêtée
+
+            debugLog(`===== Arrêt de la Session: ${reason} =====`);
+            isSessionActive = false;
+            currentStepState = 'idle';
+
+            // Arrêter la parole en cours
+            if (synth && synth.speaking) {
+                synth.cancel();
+            }
+            utterance = null; // Nettoyer
+
+            // Arrêter les timers
+            clearTimeout(holdTimerId); holdTimerId = null;
+            clearTimeout(stabilityCheckTimerId); stabilityCheckTimerId = null;
+
+
+            // Arrêter les capteurs
+            stopSensorListeners();
+
+            // Arrêter les vibrations si en cours (difficile à faire précisément, mais vider le pattern aide)
+            vibrate([]);
+
+            // Réinitialiser l'UI
+            updateStatus(reason, 'info');
+            startButton.disabled = false;
+            stopButton.disabled = true;
+            bodyElement.classList.remove('session-active');
+             if (DEBUG_MODE) {
+                 // Garder les logs visibles après l'arrêt
+                 // debugOutput.style.display = 'none';
+             }
+        }
+
+        /**
+         * Passe à l'étape suivante de la séquence.
+         */
+        function nextStep() {
+            if (!isSessionActive) return; // Ne pas continuer si la session a été arrêtée
+
+            currentStepIndex++;
+            if (currentStepIndex >= currentSequence.length) {
+                // Fin de la séquence
+                stopSession("Séquence terminée avec succès !");
+                // Jouer un son final ?
+                 playBeep(660, 200, 'triangle'); // Bip de succès un peu plus haut
+                return;
+            }
+
+            currentStep = currentSequence[currentStepIndex];
+            debugLog(`--- Démarrage Étape ${currentStepIndex + 1}: Type '${currentStep.type}' ---`);
+
+            // Réinitialiser les états spécifiques à l'étape
+            targetOrientation = currentStep.target || null;
+            targetSpeedLimit = currentStep.speedLimit !== undefined ? currentStep.speedLimit : Infinity;
+            targetStabilityThreshold = currentStep.stabilityThreshold !== undefined ? currentStep.stabilityThreshold : Infinity;
+            holdDuration = currentStep.duration || 0;
+            holdStartTime = 0;
+            clearTimeout(holdTimerId); holdTimerId = null;
+            clearTimeout(stabilityCheckTimerId); stabilityCheckTimerId = null;
+            isStableDuringHold = true; // Important pour les étapes 'hold'
+
+            // Exécuter l'étape selon son type
+            switch (currentStep.type) {
+                case 'instruction':
+                    currentStepState = 'instructing';
+                    updateStatus(currentStep.text, 'active');
+                    speak(currentStep.text, false, () => {
+                        // Une fois l'instruction terminée, passer à la suite après une pause
+                        if (isSessionActive) setTimeout(nextStep, SHORT_PAUSE_DURATION);
+                    });
+                    break;
+
+                case 'move':
+                    currentStepState = 'moving';
+                    updateStatus(`Mouvement: ${currentStep.instruction}`, 'active');
+                    // Donner l'instruction vocale, puis démarrer les capteurs et la vérification
+                    speak(currentStep.instruction, false, () => {
+                        if (isSessionActive) {
+                            debugLog(`Instruction 'move' terminée. Démarrage monitoring pour atteindre Beta=${targetOrientation?.beta}, Gamma=${targetOrientation?.gamma}`);
+                            startSensorListeners(); // Démarrer/vérifier les listeners ici
+                             // La validation se fera dans handleOrientation/handleMotion via checkStepProgress
+                        }
+                    });
+                    break;
+
+                case 'hold':
+                    currentStepState = 'holding_check_stability'; // Phase initiale de vérification
+                    updateStatus(`Tenir: ${currentStep.instruction} (${holdDuration / 1000}s)`, 'active');
+                    // Donner l'instruction, puis vérifier la stabilité initiale avant de lancer le timer
+                    speak(currentStep.instruction, false, () => {
+                        if (isSessionActive) {
+                             debugLog(`Instruction 'hold' terminée. Vérification de la stabilité initiale pour Beta=${targetOrientation?.beta}, Gamma=${targetOrientation?.gamma}`);
+                            startSensorListeners(); // Assurer que les listeners sont actifs
+                            // Vérifier si on est DÉJÀ stable et dans la bonne position
+                             isStableDuringHold = true; // Assumer stable au début du hold check
+                             checkInitialHoldStability();
+                        }
+                    });
+                    break;
+
+                default:
+                    console.error(`Type d'étape inconnu: ${currentStep.type}`);
+                    debugLog(`Erreur: Type d'étape inconnu '${currentStep.type}'`);
+                    // Essayer de passer à la suivante ? Ou arrêter ?
+                     if (isSessionActive) setTimeout(nextStep, 100); // Passer vite à la suite
+                    break;
+            }
+        }
+
+         /**
+          * Vérifie si la stabilité et l'orientation initiales sont bonnes pour démarrer le timer 'hold'.
+          */
+         function checkInitialHoldStability() {
+             if (!isSessionActive || currentStepState !== 'holding_check_stability') return;
+
+             const accelMag = calculateMagnitude(lastMotionData.acceleration.x, lastMotionData.acceleration.y, lastMotionData.acceleration.z);
+             const isCurrentlyStable = accelMag < targetStabilityThreshold;
+             const isCorrectOrientation = isOrientationWithinTolerance(lastOrientationData, targetOrientation);
+
+             debugLog(`Check Initial Hold: Stable=${isCurrentlyStable} (Acc:${accelMag.toFixed(2)}<${targetStabilityThreshold.toFixed(2)}), OrientOK=${isCorrectOrientation}`);
+
+
+             if (isCurrentlyStable && isCorrectOrientation) {
+                 // Stabilité et orientation OK -> démarrer le timer de tenue
+                 currentStepState = 'holding';
+                 holdStartTime = Date.now();
+                 isStableDuringHold = true; // Reset pour la durée du hold
+                 debugLog(`Stabilité et Orientation OK. Démarrage Hold Timer pour ${holdDuration}ms`);
+                 vibrate(VIBRATE_POSITION_REACHED); // Confirmer que la position est bonne pour commencer à tenir
+
+                 // Démarrer le timer principal pour la fin de la tenue
+                 holdTimerId = setTimeout(validateHold, holdDuration);
+
+                 // Optionnel: Démarrer une vérification périodique de stabilité pendant la tenue
+                 if (currentStep.stabilityCheck) {
+                    stabilityCheckTimerId = setInterval(checkHoldStabilityPeriodic, HOLD_STABILITY_CHECK_INTERVAL);
+                 }
+
+             } else {
+                 // Pas encore stable ou pas dans la bonne position
+                 // Donner un feedback ? Ou juste attendre ? Pour l'instant on attend.
+                 // On pourrait redemander de se stabiliser.
+                  // speak("Stabilisez la position.", true); // Peut être perturbant
+                  // Re-vérifier après un court délai
+                 if (isSessionActive) {
+                     setTimeout(checkInitialHoldStability, 500); // Réessayer dans 500ms
+                 }
+             }
+         }
+
+         /**
+          * Fonction appelée périodiquement pour vérifier la stabilité PENDANT une étape 'hold'.
+          */
+         function checkHoldStabilityPeriodic() {
+             if (!isSessionActive || currentStepState !== 'holding') {
+                 clearInterval(stabilityCheckTimerId); // Arrêter si état incorrect
+                 stabilityCheckTimerId = null;
+                 return;
+             }
+
+             const accelMag = calculateMagnitude(lastMotionData.acceleration.x, lastMotionData.acceleration.y, lastMotionData.acceleration.z);
+             const isCurrentlyStable = accelMag < targetStabilityThreshold;
+             const isStillCorrectOrientation = isOrientationWithinTolerance(lastOrientationData, targetOrientation);
+
+
+             if (!isCurrentlyStable || !isStillCorrectOrientation) {
+                  debugLog(`Instabilité ou mauvaise orientation DÉTECTÉE PENDANT LA TENUE! Stable=${isCurrentlyStable}, OrientOK=${isStillCorrectOrientation}`);
+                  isStableDuringHold = false; // Marquer comme échec potentiel
+                  // Donner un feedback d'alerte ?
+                  vibrate(VIBRATE_ERROR);
+                  // Optionnel: dire "Restez stable"
+                  // speak("Restez stable.", true);
+
+                  // Faut-il arrêter le hold ici ? Ou laisser le timer aller au bout et échouer ?
+                  // Pour l'instant, on laisse le timer aller au bout mais on a marqué l'échec.
+                  // On arrête la vérification périodique car l'échec est déjà noté.
+                   clearInterval(stabilityCheckTimerId);
+                   stabilityCheckTimerId = null;
+
+             } else {
+                  // Tout va bien, on continue de tenir
+                  debugLog(`Tenue stable et correcte (vérification périodique)`);
+             }
+         }
+
+
+        /**
+         * Vérifie la progression pendant une étape 'move'. Appelé par les handlers de capteurs.
+         */
+        function checkStepProgress() {
+             if (!isSessionActive || currentStepState !== 'moving' || !currentStep || !targetOrientation) return;
+
+             // On vérifie si l'orientation cible est atteinte
+             if (isOrientationWithinTolerance(lastOrientationData, targetOrientation)) {
+                  debugLog(`Orientation cible atteinte pour l'étape 'move'. Validation.`);
+                  validateStep();
+             }
+             // La vérification de vitesse est déjà faite dans handleMotion.
+        }
+
+        /**
+         * Valide la fin réussie d'une étape (move ou hold).
+         */
+        function validateStep() {
+            if (!isSessionActive) return;
+
+             debugLog(`--- Validation Étape ${currentStepIndex + 1} ---`);
+             currentStepState = 'validating'; // État transitoire
+
+             // Arrêter les vérifications spécifiques à l'étape (comme le timer de hold périodique)
+             clearInterval(stabilityCheckTimerId); stabilityCheckTimerId = null;
+             clearTimeout(holdTimerId); holdTimerId = null; // Au cas où appelé avant la fin du timer hold (ne devrait pas)
+
+             // Feedback de succès pour l'étape
+             // Pas de vibration ici car déjà fait (position atteinte ou hold success)
+             playBeep(523, 150, 'sine'); // C5 Bip
+
+            // Arrêter les capteurs si la prochaine étape est une instruction (pour économiser batterie)
+            const nextStepType = (currentStepIndex + 1 < currentSequence.length) ? currentSequence[currentStepIndex + 1].type : 'end';
+            if (nextStepType === 'instruction' || nextStepType === 'end') {
+                stopSensorListeners();
+            }
+
+             // Passer à l'étape suivante après une courte pause
+             setTimeout(nextStep, SHORT_PAUSE_DURATION);
+        }
+
+        /**
+          * Fonction appelée par le timer à la fin de la durée prévue pour une étape 'hold'.
+          */
+         function validateHold() {
+              if (!isSessionActive || currentStepState !== 'holding') {
+                  debugLog("ValidateHold appelé mais état incorrect ou session inactive.");
+                  return; // Ne rien faire si l'état a changé
+              }
+
+              debugLog(`Fin du timer de tenue (${holdDuration}ms). Vérification finale.`);
+              clearInterval(stabilityCheckTimerId); // Arrêter la vérif périodique si elle tournait encore
+              stabilityCheckTimerId = null;
+
+              // Vérifier si on est TOUJOURS stable et dans la bonne position à la fin
+              const accelMag = calculateMagnitude(lastMotionData.acceleration.x, lastMotionData.acceleration.y, lastMotionData.acceleration.z);
+              const isFinalStable = accelMag < targetStabilityThreshold;
+              const isFinalOrientationOk = isOrientationWithinTolerance(lastOrientationData, targetOrientation);
+
+              // Le succès dépend de la stabilité MAINTENUE PENDANT toute la durée (via isStableDuringHold)
+              // ET de la condition finale.
+               if (isStableDuringHold && isFinalStable && isFinalOrientationOk) {
+                    debugLog("Tenue réussie ! Stabilité maintenue.");
+                    vibrate(VIBRATE_HOLD_SUCCESS);
+                    // La validation finale (passage à nextStep) se fait dans validateStep
+                    validateStep();
+               } else {
+                    // Échec de la tenue (soit instable pendant, soit position incorrecte à la fin)
+                    debugLog(`Échec de la tenue. Raison: Stabilité pendant=${isStableDuringHold}, Stabilité fin=${isFinalStable}, Orientation fin=${isFinalOrientationOk}`);
+                    vibrate(VIBRATE_ERROR);
+                    speak("Position non tenue correctement. Nous allons réessayer cette étape.", false, () => {
+                         // Revenir à l'instruction de cette étape 'hold' pour la refaire
+                         if (isSessionActive) {
+                             // Ne pas incrémenter currentStepIndex, mais relancer l'étape actuelle
+                             currentStepIndex--; // Décrémenter pour que nextStep relance la même
+                             setTimeout(nextStep, 500);
+                         }
+                    });
+               }
+         }
+
+        // --- Initialisation et Écouteurs d'UI ---
+
+        /**
+         * Initialise l'application lors du chargement de la page.
+         */
+        function initializeApp() {
+            updateStatus("Prêt. Tenez le tel en main droite, cliquez sur Démarrer.");
+            stopButton.disabled = true; // Stop désactivé au début
+
+            // Afficher le debug si activé
+            if (DEBUG_MODE) {
+                debugOutput.style.display = 'block';
+            } else {
+                 debugOutput.style.display = 'none';
+            }
+
+            // Vérifier le support des API nécessaires
+             let supportOk = true;
+             if (!('speechSynthesis' in window)) {
+                  updateStatus("Erreur: API SpeechSynthesis non supportée.", 'error');
+                  supportOk = false;
+             }
+              if (!('vibrate' in navigator)) {
+                  debugLog("Info: API Vibration non supportée."); // Non bloquant
+             }
+              if (typeof DeviceOrientationEvent === 'undefined' || typeof DeviceMotionEvent === 'undefined') {
+                   updateStatus("Erreur: API Motion/Orientation non supportée.", 'error');
+                   supportOk = false;
+              }
+             // Web Audio API check se fait lors de l'initialisation
+
+             if (!supportOk) {
+                 startButton.disabled = true;
+                 updateStatus("Votre navigateur ne supporte pas toutes les fonctionnalités requises.", 'error');
+             }
+
+            // Ajouter les écouteurs sur les boutons
+            startButton.addEventListener('click', () => {
+                 // On passe la séquence ici
+                 startSession(energyBallSequence);
+            });
+
+            stopButton.addEventListener('click', () => {
+                stopSession();
+            });
+
+             // Message d'info sur la nécessité d'interaction pour l'audio/capteurs
+             console.log("L'application nécessite une interaction (clic sur Démarrer) pour activer l'audio et les capteurs.");
+        }
+
+        // Lancer l'initialisation une fois la page chargée
+        window.addEventListener('load', initializeApp);
+
+        // --- Fin du JavaScript ---
+    </script>
+</body>
+</html>
